@@ -1,3 +1,4 @@
+import { buscarFuncionarioUsuario } from './usuario-funcionario.ts';
 import { listarEquipamentosEmLote } from './irrigacao-lote.ts';
 import { incluirParametrosFixos, validarParametrosFixos } from './irrigacao-parametros.ts';
 import { atenderBiometriaLocal, registrarUsuarioBiometria } from './biometria-local.ts';
@@ -44,6 +45,7 @@ carregarEnv(path.join(SERVER_DIR, '.env'));
 
 const verificarAcessoAba = createEmailAccessGuard(createEmailAccessStore({ url: process.env.ORDS_ACESSO_ABA_URL || DEFAULT_ACCESS_URL, token: process.env.ORDS_ACESSO_ABA_TOKEN || '' }));
 const authGuard = createAuthGuard(createAuth({
+  buscarFuncionario: buscarFuncionarioUsuario,
   sessionFile: path.join(SERVER_DIR, 'data', 'sessoes.json'),
   url: process.env.ORDS_AUTH_USUARIOS_URL ?? '',
   token: process.env.ORDS_AUTH_TOKEN ?? '',
@@ -318,7 +320,7 @@ function entradaOracleDoCorpo(corpo: Record<string, unknown>): OracleConfigEntra
 const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, ngrok-skip-browser-warning, X-Device-ID, X-Oracle-User, X-Oracle-Password');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, ngrok-skip-browser-warning, X-Device-ID, X-Oracle-User, X-Oracle-Password, X-Envio-Lote');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);

@@ -1,3 +1,4 @@
+import { randomUUID, createHash } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { ABAS_DISPOSITIVO, ABAS_OBRIGATORIAS, type AbaDispositivo, type AcessoUsuario } from './device-tabs.ts';
 import { AuthError, readAuthBody } from './auth.ts';
@@ -108,8 +109,25 @@ function requiredTabs(url: string): AbaDispositivo[] | null {
   return null;
 }
 export function createEmailAccessGuard(store: ReturnType<typeof createEmailAccessStore>) {
+  const lotes = new Map<string, { usuario: number; sessao: string; abas: AbaDispositivo[]; criado: number }>();
+
   return async (req: IncomingMessage, res: ServerResponse, pathname: string, user: { perfil: string; idUsuario: number }): Promise<boolean> => {
     const json = (value: unknown) => { res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); };
+    const identidadeSessao = createHash('sha256').update(String(req.headers?.authorization ?? '')).digest('hex');
+    if (pathname === '/api/envios/lote' && req.method === 'POST') {
+      for (const [id, lote] of lotes) if (Date.now() - lote.criado > 86400000) lotes.delete(id);
+      if (lotes.size >= 10000) throw new AuthError(503, 'Limite de lotes de envio atingido. Tente novamente.');
+      const abas = user.perfil === 'admin' ? ABAS_DISPOSITIVO.map(item => item.id) : (await store.current(user.idUsuario)).abas;
+      const lote = randomUUID();
+      lotes.set(lote, { usuario: user.idUsuario, sessao: identidadeSessao, abas: [...abas], criado: Date.now() });
+      json({ lote }); return true;
+    }
+    if (pathname === '/api/envios/lote' && req.method === 'DELETE') {
+      const id = String(req.headers?.['x-envio-lote'] ?? '');
+      const lote = lotes.get(id);
+      if (lote?.usuario === user.idUsuario && lote.sessao === identidadeSessao) lotes.delete(id);
+      json({ ok: true }); return true;
+    }
     if (pathname === '/api/acesso/abas' && req.method === 'GET') { json(await store.current(user.idUsuario)); return true; }
     if (pathname === '/api/acessos/abas' || pathname.startsWith('/api/acessos/abas/')) {
       if (user.perfil !== 'admin') throw new AuthError(403, 'Somente o administrador pode liberar abas por usuário.');
@@ -122,12 +140,17 @@ export function createEmailAccessGuard(store: ReturnType<typeof createEmailAcces
       }
       throw new AuthError(405, 'Método não permitido.');
     }
-    const tabs = requiredTabs(pathname);
-    // Importação e envio de apontamentos salvos são básicos para toda conta autenticada.
-    if (tabs && !tabs.some(tab => ABAS_OBRIGATORIAS.includes(tab))) {
-      if (user.perfil === 'admin') return false;
-      const access = await store.current(user.idUsuario);
-      if (!tabs.some(tab => access.abas.includes(tab))) throw new AuthError(403, 'Esta aba não foi liberada para este usuário.');
+    const envios: Record<string, AbaDispositivo> = {
+      '/api/apontamento': 'insumos', '/api/apontamento/mao-de-obra': 'mao-de-obra',
+      '/api/irrigacao': 'irrigacao', '/api/perdas': 'perdas', '/api/biometria/lancamentos': 'biometria',
+    };
+    const aba = req.method === 'POST' ? envios[pathname] : undefined;
+    if (aba && user.perfil !== 'admin') {
+      const idLote = String(req.headers?.['x-envio-lote'] ?? '');
+      const lote = idLote ? lotes.get(idLote) : undefined;
+      if (idLote && (!lote || lote.usuario !== user.idUsuario || lote.sessao !== identidadeSessao || Date.now() - lote.criado > 86400000)) throw new AuthError(403, 'Lote de envio inválido. Inicie o envio novamente.');
+      const acesso = lote ?? await store.current(user.idUsuario);
+      if (!acesso.abas.includes(aba)) throw new AuthError(403, 'Você não tem permissão para enviar apontamentos desta aba. Solicite a liberação ao administrador. Os dados permanecem salvos no dispositivo.');
     }
     return false;
   };
