@@ -1,0 +1,17 @@
+{
+  "name": "agrocontrol-api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "start": "node --watch index.ts",
+    "public": "node api-public.mjs",
+    "iniciar": "node iniciar.mjs",
+    "parar": "node parar.mjs",
+    "configurar": "node painel.mjs"
+  },
+  "engines": { "node": ">=24" },
+  "dependencies": {
+    "oracledb": "^7.0.1"
+  }
+}

@@ -1,0 +1,32 @@
+# Dependências e arquivos locais
+node_modules/
+.env
+.env.*
+!.env.example
+*.log
+logs/
+*.pid
+data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Backups e artefatos de diagnóstico
+backup*/
+*.backup*
+*.bak
+apk-analysis/
+*.apk
+*.aab
+*.jks
+*.keystore
+*.pem
+*.key
+tests/tmp-*/
+
+# Editores e sistema
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
