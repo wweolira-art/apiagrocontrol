@@ -14,7 +14,7 @@ interface Account {
   nome: string;
   email: string;
   senha_hash?: string;
-  perfil?: string;
+  perfil?: string | number;
   ativo?: number | null;
   data_cadastro?: string | null;
   data_ultimo_login?: string | null;
@@ -57,7 +57,8 @@ function publicUser(row: Account) {
     codFuncionario: Number.isSafeInteger(Number(row.cod_funcionario)) ? Number(row.cod_funcionario) : null,
     nome: row.nome,
     email: row.email,
-    perfil: row.perfil === 'admin' ? 'admin' : 'operador',
+    perfil: Number(row.perfil) === 1 || row.perfil === 'admin' ? 'admin'
+      : Number(row.perfil) === 2 || row.perfil === 'contribuinte' ? 'contribuinte' : 'operador',
   };
 }
 
@@ -112,7 +113,10 @@ export function createAuth(options: {
       signal: AbortSignal.timeout(20_000),
       redirect: 'error',
     });
-    if (!response.ok) throw new AuthError(502, 'Não foi possível acessar o cadastro protegido de usuários.');
+    if (!response.ok) {
+      const etapa = method === 'PUT' ? 'atualizar o último acesso' : method === 'POST' ? 'cadastrar o usuário' : 'consultar os usuários';
+      throw new AuthError(502, `Falha ao ${etapa} na ORDS (${method}, HTTP ${response.status}). Confira a configuração da API e a coluna PERFIL numérica.`);
+    }
     if (response.status === 204) return {};
     return response.json();
   }
@@ -162,7 +166,7 @@ export function createAuth(options: {
     const hash = row.senha_hash?.startsWith('scrypt$') ? row.senha_hash : await hashPassword(password);
     await ords(String(row.id_usuario), 'PUT', {
       id_usuario: row.id_usuario, cod_funcionario: row.cod_funcionario ?? null, nome: row.nome, email: row.email,
-      perfil: row.perfil === 'admin' ? 'admin' : 'operador', ativo: row.ativo,
+      ...(row.perfil !== undefined ? { perfil: row.perfil } : {}), ativo: row.ativo,
       data_cadastro: row.data_cadastro,
       senha_hash: hash,
       data_ultimo_login: new Date(now()).toISOString(),
@@ -228,7 +232,7 @@ export function createAuth(options: {
     if (await byEmail(email)) throw new AuthError(409, 'Já existe um usuário com este e-mail.');
     const row = await ords('', 'POST', {
       nome, email, senha_hash: await hashPassword(password),
-      perfil: body.admin === true ? 'admin' : 'operador', ativo: 1,
+      perfil: body.admin === true ? 1 : 3, ativo: 1,
       data_cadastro: new Date(now()).toISOString(),
     }) as Account;
     return { ...publicUser(row), ativo: true, dataCadastro: row.data_cadastro ?? null, dataUltimoLogin: null };
