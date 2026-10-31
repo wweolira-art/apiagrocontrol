@@ -5,7 +5,6 @@ import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 const scrypt = promisify(scryptCallback);
-const SESSION_MS = 8 * 60 * 60 * 1000;
 const WINDOW_MS = 15 * 60 * 1000;
 
 interface Account {
@@ -70,6 +69,7 @@ function active(row: Account | undefined): row is Account {
 export function createAuth(options: {
   url: string;
   token: string;
+  buscarFuncionario?: (codigo: number) => Promise<{ codigo: number; nome: string }>;
   allowLegacy?: boolean;
   fetch?: typeof fetch;
   now?: () => number;
@@ -77,20 +77,19 @@ export function createAuth(options: {
 }) {
   const request = options.fetch ?? fetch;
   const now = options.now ?? Date.now;
-  const sessions = new Map<string, { id: number; expires: number }>();
+  const sessions = new Map<string, { id: number; expires: number | null; user?: ReturnType<typeof publicUser> }>();
   if (options.sessionFile) {
     try {
       const saved = JSON.parse(fs.readFileSync(options.sessionFile, 'utf8'));
-      if (!Array.isArray(saved) || saved.length > 10_000) throw new Error('Arquivo de sessões inválido.');
+      if (!Array.isArray(saved) || saved.length > 10000) throw new Error('Arquivo de sessões inválido.');
       for (const entry of saved) {
         if (!Array.isArray(entry) || entry.length !== 2) throw new Error('Sessão inválida.');
         const [key, session] = entry;
-        if (!/^[a-f0-9]{64}$/.test(key) || !Number.isSafeInteger(session?.id) || session.id <= 0 || !Number.isFinite(session.expires)) throw new Error('Sessão inválida.');
-        if (session.expires > now()) sessions.set(key, { id: session.id, expires: session.expires });
+        if (!/^[a-f0-9]{64}$/.test(key) || !Number.isSafeInteger(session?.id) || session.id <= 0 || (session.expires !== null && !Number.isFinite(session.expires))) throw new Error('Sessão inválida.');
+        if (session.expires === null || session.expires > now()) sessions.set(key, { id: session.id, expires: null,
+          ...(session.user?.idUsuario === session.id && ['admin','contribuinte','operador'].includes(session.user.perfil) ? { user: session.user } : {}) });
       }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   }
   function persistSessions() {
     if (!options.sessionFile) return;
@@ -171,14 +170,14 @@ export function createAuth(options: {
       senha_hash: hash,
       data_ultimo_login: new Date(now()).toISOString(),
     });
-    for (const [key, session] of sessions) if (session.expires <= now()) sessions.delete(key);
+    for (const [key, session] of sessions) if (session.expires !== null && session.expires <= now()) sessions.delete(key);
     if (sessions.size >= 10_000) throw new AuthError(503, 'Limite de sessões atingido. Tente novamente mais tarde.');
     const token = randomBytes(32).toString('base64url');
-    const expires = now() + SESSION_MS;
-    sessions.set(digest(token), { id: Number(row.id_usuario), expires });
+    const expires = null;
+    sessions.set(digest(token), { id: Number(row.id_usuario), expires, user: publicUser(row) });
     try { persistSessions(); } catch (error) { sessions.delete(digest(token)); throw error; }
     attempts.delete(`usuario:${digest(usuario)}`);
-    return { ...publicUser(row), token, expiraEm: new Date(expires).toISOString() };
+    return { ...publicUser(row), token, expiraEm: null };
   }
 
   async function authenticate(header: string | undefined) {
@@ -187,17 +186,19 @@ export function createAuth(options: {
     if (!token) throw new AuthError(401, 'Token de autenticação inválido. Entre novamente.', 'AUTH_TOKEN_INVALIDO');
     const key = token ? digest(token) : '';
     const session = sessions.get(key);
-    if (!session || session.expires <= now()) {
+    if (!session) {
       sessions.delete(key);
       throw new AuthError(401, 'Sessão expirada ou não reconhecida. Entre novamente e reenvie os registros salvos.', 'AUTH_SESSAO_EXPIRADA');
     }
+    if (session.user) return session.user;
     const row = await byId(session.id);
     if (!active(row)) {
       sessions.delete(key);
       persistSessions();
       throw new AuthError(401, 'Sessão inválida. Entre novamente.', 'AUTH_USUARIO_INATIVO');
     }
-    return publicUser(row);
+    session.user = publicUser(row); session.expires = null; persistSessions();
+    return session.user;
   }
 
   function logout(header: string | undefined) {
@@ -222,23 +223,59 @@ export function createAuth(options: {
     return users.sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
   }
 
+  async function funcionario(codigo: number) {
+    if (!Number.isSafeInteger(codigo) || codigo <= 0) throw new AuthError(400, 'Informe um código de funcionário válido.');
+    if (!options.buscarFuncionario) throw new AuthError(503, 'Consulta de funcionários não configurada no servidor.');
+    try { return await options.buscarFuncionario(codigo); }
+    catch { throw new AuthError(400, 'Funcionário não encontrado ou código ambíguo no cadastro ativo.'); }
+  }
   async function create(body: Record<string, unknown>) {
-    const nome = String(body.nome ?? '').trim();
+    const codigo = Number(body.codFuncionario);
     const email = String(body.email ?? '').trim().toLowerCase();
     const password = typeof body.senha === 'string' ? body.senha : '';
-    if (!nome || nome.length > 200 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254 || password.length < 12 || password.length > 1024) {
-      throw new AuthError(400, 'Informe nome, e-mail válido e senha de pelo menos 12 caracteres.');
+    const perfil = Number(body.perfil ?? (body.admin === true ? 1 : 3));
+    if (!Number.isSafeInteger(codigo) || codigo <= 0 || ![1,2,3].includes(perfil) || password.length < 12 || password.length > 1024 ||
+        (email && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254))) {
+      throw new AuthError(400, 'Informe código de funcionário, perfil válido e senha de pelo menos 12 caracteres.');
     }
-    if (await byEmail(email)) throw new AuthError(409, 'Já existe um usuário com este e-mail.');
+    if (await byCodFuncionario(codigo)) throw new AuthError(409, 'Já existe um usuário para este funcionário.');
+    if (email && await byEmail(email)) throw new AuthError(409, 'Já existe um usuário com este e-mail.');
+    const cadastro = await funcionario(codigo);
     const row = await ords('', 'POST', {
-      nome, email, senha_hash: await hashPassword(password),
-      perfil: body.admin === true ? 1 : 3, ativo: 1,
-      data_cadastro: new Date(now()).toISOString(),
+      cod_funcionario: codigo, nome: cadastro.nome, email: email || null, senha_hash: await hashPassword(password),
+      perfil, ativo: 1, data_cadastro: new Date(now()).toISOString(),
     }) as Account;
+    if (!Number.isSafeInteger(Number(row.id_usuario)) || Number(row.id_usuario) <= 0) throw new AuthError(502, 'A API não retornou o código do usuário criado. Confira o cadastro antes de tentar novamente.');
     return { ...publicUser(row), ativo: true, dataCadastro: row.data_cadastro ?? null, dataUltimoLogin: null };
   }
 
-  return { login, authenticate, logout, list, create };
+  async function update(id: number, body: Record<string, unknown>) {
+    if (!Number.isSafeInteger(id) || id <= 0) throw new AuthError(400, 'Usuário inválido.');
+    const row = await byId(id);
+    if (!row) throw new AuthError(404, 'Usuário não encontrado.');
+    const codigo = Number(body.codFuncionario);
+    const password = body.senha === undefined ? '' : body.senha;
+    if (!Number.isSafeInteger(codigo) || codigo <= 0 || typeof password !== 'string' || (password && (password.length < 12 || password.length > 1024))) {
+      throw new AuthError(400, 'Informe um código válido e uma nova senha de pelo menos 12 caracteres, ou deixe a senha vazia para mantê-la.');
+    }
+    const duplicado = await byCodFuncionario(codigo);
+    if (duplicado && Number(duplicado.id_usuario) !== id) throw new AuthError(409, 'Este funcionário já possui outro usuário.');
+    const cadastro = await funcionario(codigo);
+    const atualizado = {
+      id_usuario: id, cod_funcionario: codigo, nome: cadastro.nome, email: row.email,
+      senha_hash: password ? await hashPassword(password) : row.senha_hash,
+      ...(row.perfil !== undefined ? { perfil: row.perfil } : {}), ativo: row.ativo,
+      data_cadastro: row.data_cadastro, data_ultimo_login: row.data_ultimo_login,
+    };
+    await ords(String(id), 'PUT', atualizado);
+    if (password || Number(row.cod_funcionario) !== codigo) {
+      for (const [chave, sessao] of sessions) if (sessao.id === id) sessions.delete(chave);
+      persistSessions();
+    }
+    return { ...publicUser(atualizado), ativo: Number(row.ativo) === 1, dataCadastro: row.data_cadastro ?? null, dataUltimoLogin: row.data_ultimo_login ?? null };
+  }
+
+  return { login, authenticate, logout, list, create, funcionario, update };
 }
 
 export function sendAuthError(res: ServerResponse, error: unknown) {
@@ -276,7 +313,7 @@ export function createAuthGuard(auth: ReturnType<typeof createAuth>, afterAuthen
       }
       if (pathname !== '/api' && !pathname.startsWith('/api/')) return false;
       const user = await auth.authenticate(req.headers.authorization);
-      const adminRoute = pathname === '/api/usuarios' || pathname.startsWith('/api/oracle-config') || pathname === '/api/config' || pathname === '/api/irrigacao/insert-test';
+      const adminRoute = (pathname === '/api/usuarios' || pathname.startsWith('/api/usuarios/')) || pathname.startsWith('/api/oracle-config') || pathname === '/api/config' || pathname === '/api/irrigacao/insert-test';
       if (adminRoute && user.perfil !== 'admin') throw new AuthError(403, 'Acesso permitido somente ao administrador.');
       if (afterAuthentication && await afterAuthentication(req, res, pathname, user)) return true;
       if (pathname === '/api/auth/logout' && req.method === 'POST') {
@@ -288,8 +325,16 @@ export function createAuthGuard(auth: ReturnType<typeof createAuth>, afterAuthen
         json(200, user);
         return true;
       }
+      if (pathname === '/api/usuarios/funcionario' && req.method === 'GET') {
+        json(200, await auth.funcionario(Number(new URL(req.url ?? '/', 'http://localhost').searchParams.get('codigo'))));
+        return true;
+      }
       if (pathname === '/api/usuarios' && req.method === 'GET') {
         json(200, await auth.list());
+        return true;
+      }
+      if (/^\/api\/usuarios\/\d+$/.test(pathname) && req.method === 'PUT') {
+        json(200, await auth.update(Number(pathname.split('/').at(-1)), await readAuthBody(req)));
         return true;
       }
       if (pathname === '/api/usuarios' && req.method === 'POST') {

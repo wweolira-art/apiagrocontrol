@@ -55,3 +55,9 @@ export function validarInsumoIrrigacao(insumo: InsumoIrrigacao | undefined, moda
     if (typeof insumo[campo] !== 'number' || Number(insumo[campo]) <= 0) throw new Error(`Informe ${campo} para este tipo de irrigação.`);
   }
 }
+
+export function validarAreaIrrigadaTalhao(areaIrrigada: number, areaTalhao: number): void {
+  if (!Number.isFinite(areaTalhao) || areaTalhao <= 0) throw new Error('Talhão sem área válida cadastrada. Atualize os cadastros.');
+  if (!Number.isFinite(areaIrrigada) || areaIrrigada <= 0) throw new Error('Área irrigada calculada inválida. Confira os parâmetros.');
+  if (areaIrrigada > areaTalhao + 1e-9) throw new Error('A área irrigada não pode ultrapassar a área cadastrada do talhão. Confira a lâmina, os horários e a distância.');
+}

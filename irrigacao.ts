@@ -1,3 +1,5 @@
+import { calcularIndicadoresIrrigacao } from './irrigacao-calculo.ts';
+import { validarAreaIrrigadaTalhao } from './irrigacao-validacao.ts';
 import { validarInsumoIrrigacao, validarParadasIrrigacao } from './irrigacao-validacao.ts';
 import { calcularDistanciasPorLamina, distribuirInsumosIrrigacao } from './irrigacao-periodos.ts';
 import { consultarSql, consultarSqlGravacao, withOracleGravacao } from './oracle.ts';
@@ -180,7 +182,7 @@ export async function gravarIrrigacao(entrada: IrrigacaoEntrada): Promise<Irriga
       if (!row || contexto.rows?.length !== 1) throw new Error('Não foi possível identificar unicamente a fazenda e a operação no ERP.');
       const grupo = Number(row.GRUPO), empresa = Number(row.EMPRESA), filial = Number(row.FILIAL);
       if (![grupo, empresa, filial].every(valor => Number.isSafeInteger(valor) && valor > 0)) throw new Error('Grupo, empresa ou filial inválidos no cadastro.');
-      const talhao = await connection.execute(`SELECT 1 AS ok FROM agricola.talhao
+      const talhao = await connection.execute(`SELECT NVL(areaplantada, areaproducao) AS area_ha FROM agricola.talhao
         WHERE cod_fazenda = :fazenda AND cod_talhao = :talhao AND zona = :zona AND ROWNUM = 1`,
       { fazenda: entrada.codFazenda, talhao: entrada.codTalhao, zona: entrada.zona }, opcoes);
       if (!talhao.rows?.length) throw new Error('Talhão e zona não encontrados para esta fazenda.');
@@ -206,6 +208,14 @@ export async function gravarIrrigacao(entrada: IrrigacaoEntrada): Promise<Irriga
         for (const parada of entrada.paradas) {
           if (!motivos.some(motivo => motivo.codigo === parada.codMotivo)) throw new Error(`Motivo de parada ${parada.codMotivo} não encontrado ou inativo neste contexto. Atualize os motivos.`);
         }
+      }
+      if (!entrada.apenasParadas && entrada.insumo) {
+        const espacamento = ['A', 'H'].includes(equipamento.modalidade ?? '')
+          ? (await listarEspacamentosIrrigacao()).find(item => item.codigo === entrada.insumo?.codEspacamento) : undefined;
+        const indicadores = calcularIndicadoresIrrigacao({ modalidade: equipamento.modalidade!, tempoLaminaBarra: equipamento.tempoLaminaBarra,
+          ocultaPosicoesHidr: equipamento.ocultaPosicoesHidr }, entrada.insumo, espacamento, entrada.paradas ?? []);
+        validarAreaIrrigadaTalhao(indicadores.areaIrrigada, Number(talhao.rows?.[0]?.AREA_HA));
+        entrada = { ...entrada, area: indicadores.areaIrrigada };
       }
       // Calcula tudo antes do primeiro INSERT; o servidor refaz a distribuição.
       const periodos = !entrada.apenasParadas && entrada.insumo?.horaInicio !== undefined && (entrada.paradas?.length || entrada.insumo.distanciasPeriodos !== undefined)
