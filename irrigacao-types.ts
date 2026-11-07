@@ -6,6 +6,10 @@ export interface TipoIrrigacao {
 
 export interface IrrigacaoEntrada {
   apenasParadas?: boolean;
+  houveHorarioPico?: boolean;
+  codMotivoHorarioPico?: number;
+  inicioParadaPico?: string;
+  terminoParadaPico?: string;
   dataApontamento: string;
   codFazenda: number;
   codTalhao: number;

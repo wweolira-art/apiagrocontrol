@@ -1,6 +1,5 @@
 import { calcularIndicadoresIrrigacao } from './irrigacao-calculo.ts';
-import { validarAreaIrrigadaTalhao } from './irrigacao-validacao.ts';
-import { validarInsumoIrrigacao, validarParadasIrrigacao } from './irrigacao-validacao.ts';
+import { minutosHorarioIrrigacao, validarAreaIrrigadaTalhao, validarInsumoIrrigacao, validarParadasIrrigacao } from './irrigacao-validacao.ts';
 import { calcularDistanciasPorLamina, distribuirInsumosIrrigacao } from './irrigacao-periodos.ts';
 import { consultarSql, consultarSqlGravacao, withOracleGravacao } from './oracle.ts';
 import type { MotivoParadaIrrigacao, EspacamentoIrrigacao, EquipamentoIrrigacao, IrrigacaoEntrada, IrrigacaoGravada, TipoIrrigacao } from './irrigacao-types.ts';
@@ -161,18 +160,36 @@ export async function consultarEquipamentoIrrigacao(codigo: number, dataApontame
 export function validarIrrigacao(entrada: IrrigacaoEntrada): void {
   if (!entrada || typeof entrada !== 'object') throw new Error('Informe os dados da irrigação.');
   if (entrada.apenasParadas !== undefined && typeof entrada.apenasParadas !== 'boolean') throw new Error('Opção apenas paradas inválida.');
+  if (entrada.houveHorarioPico !== undefined && typeof entrada.houveHorarioPico !== 'boolean') throw new Error('Opção de horário de pico inválida.');
+  if (entrada.houveHorarioPico) {
+    if (!Number.isSafeInteger(entrada.codMotivoHorarioPico) || Number(entrada.codMotivoHorarioPico) <= 0) throw new Error('Informe um motivo válido para a parada do horário de pico.');
+    const inicioPico = minutosHorarioIrrigacao(entrada.inicioParadaPico ?? '');
+    const terminoPico = minutosHorarioIrrigacao(entrada.terminoParadaPico ?? '');
+    if (terminoPico <= inicioPico) throw new Error('O término da parada do horário de pico deve ser posterior ao início, no mesmo dia.');
+  }
   if (![entrada.codFazenda, entrada.codTalhao, entrada.codFuncionario, entrada.codOperacao, entrada.codTipoIrrigacao, entrada.codEquipamento].every(valor => Number.isSafeInteger(valor) && valor > 0) ||
       !Number.isSafeInteger(entrada.zona) || entrada.zona < 0) throw new Error('Selecione fazenda, talhão, zona, funcionário, operação e tipo de irrigação válidos.');
   if (!entrada.apenasParadas && (typeof entrada.area !== 'number' || !Number.isFinite(entrada.area) || entrada.area <= 0 ||
       typeof entrada.numeroLamina !== 'number' || !Number.isFinite(entrada.numeroLamina) || entrada.numeroLamina <= 0)) throw new Error('Área e lâmina devem ser maiores que zero.');
-  if (entrada.apenasParadas && !entrada.paradas?.length) throw new Error('Adicione pelo menos uma parada.');
+  const paradas = paradasDaEntrada(entrada);
+  if (entrada.apenasParadas && !paradas.length) throw new Error('Adicione pelo menos uma parada.');
   validarDataIrrigacao(entrada.dataApontamento);
-  validarParadasIrrigacao(entrada.paradas);
-  if (!entrada.apenasParadas && (entrada.insumo !== undefined || entrada.paradas?.length)) validarInsumoIrrigacao(entrada.insumo);
+  validarParadasIrrigacao(paradas);
+  if (!entrada.apenasParadas && (entrada.insumo !== undefined || paradas.length)) validarInsumoIrrigacao(entrada.insumo);
+}
+
+function paradasDaEntrada(entrada: IrrigacaoEntrada) {
+  const outras = entrada.paradas ?? [];
+  const pico = entrada.houveHorarioPico ? { codMotivo: entrada.codMotivoHorarioPico!, inicio: entrada.inicioParadaPico!, termino: entrada.terminoParadaPico!, descricao: 'Horário de pico' } : null;
+  return [
+    ...outras,
+    ...(pico && !outras.some(parada => parada.codMotivo === pico.codMotivo && parada.inicio === pico.inicio && parada.termino === pico.termino) ? [pico] : []),
+  ];
 }
 
 export async function gravarIrrigacao(entrada: IrrigacaoEntrada): Promise<IrrigacaoGravada> {
   validarIrrigacao(entrada);
+  const paradas = paradasDaEntrada(entrada);
   return withOracleGravacao(async (connection, driver) => {
     const opcoes = { outFormat: driver.OUT_FORMAT_OBJECT };
     try {
@@ -198,14 +215,14 @@ export async function gravarIrrigacao(entrada: IrrigacaoEntrada): Promise<Irriga
       if (entrada.insumo && !entrada.apenasParadas) {
         if (!equipamento.modalidade) throw new Error('Atualize o cadastro do equipamento para identificar os parâmetros de irrigação.');
         if (entrada.insumo.laminaAutomaticaMmHa !== undefined) {
-          const distanciasPeriodos = calcularDistanciasPorLamina(entrada.insumo, entrada.paradas ?? [], equipamento.modalidade, equipamento.tempoLaminaBarra);
+          const distanciasPeriodos = calcularDistanciasPorLamina(entrada.insumo, paradas, equipamento.modalidade, equipamento.tempoLaminaBarra);
           entrada = { ...entrada, insumo: { ...entrada.insumo, distanciasPeriodos, distancia: distanciasPeriodos.reduce((total, item) => total + item.distancia, 0) } };
         }
         validarInsumoIrrigacao(entrada.insumo, equipamento.modalidade);
       }
-      if (entrada.paradas?.length) {
+      if (paradas.length) {
         const motivos = mapearMotivosParada(await consultarSql(SQL_MOTIVOS_PARADA_IRRIGACAO, { grupo, empresa, filial }));
-        for (const parada of entrada.paradas) {
+        for (const parada of paradas) {
           if (!motivos.some(motivo => motivo.codigo === parada.codMotivo)) throw new Error(`Motivo de parada ${parada.codMotivo} não encontrado ou inativo neste contexto. Atualize os motivos.`);
         }
       }
@@ -213,13 +230,13 @@ export async function gravarIrrigacao(entrada: IrrigacaoEntrada): Promise<Irriga
         const espacamento = ['A', 'H'].includes(equipamento.modalidade ?? '')
           ? (await listarEspacamentosIrrigacao()).find(item => item.codigo === entrada.insumo?.codEspacamento) : undefined;
         const indicadores = calcularIndicadoresIrrigacao({ modalidade: equipamento.modalidade!, tempoLaminaBarra: equipamento.tempoLaminaBarra,
-          ocultaPosicoesHidr: equipamento.ocultaPosicoesHidr }, entrada.insumo, espacamento, entrada.paradas ?? []);
+          ocultaPosicoesHidr: equipamento.ocultaPosicoesHidr }, entrada.insumo, espacamento, paradas);
         validarAreaIrrigadaTalhao(indicadores.areaIrrigada, Number(talhao.rows?.[0]?.AREA_HA));
         entrada = { ...entrada, area: indicadores.areaIrrigada };
       }
       // Calcula tudo antes do primeiro INSERT; o servidor refaz a distribuição.
-      const periodos = !entrada.apenasParadas && entrada.insumo?.horaInicio !== undefined && (entrada.paradas?.length || entrada.insumo.distanciasPeriodos !== undefined)
-        ? distribuirInsumosIrrigacao(entrada.insumo, entrada.paradas ?? [], equipamento.modalidade!)
+      const periodos = !entrada.apenasParadas && entrada.insumo?.horaInicio !== undefined && (paradas.length || entrada.insumo.distanciasPeriodos !== undefined)
+        ? distribuirInsumosIrrigacao(entrada.insumo, paradas, equipamento.modalidade!)
         : entrada.insumo && !entrada.apenasParadas ? [entrada.insumo] : [];
       const result = await connection.execute(`INSERT INTO csintegracao.cs_agr_irrig_apontamento
         (cod_grupoempresa, cod_empresa, cod_filial, ano_apontamento, data_apontamento, importado)
@@ -270,7 +287,7 @@ export async function gravarIrrigacao(entrada: IrrigacaoEntrada): Promise<Irriga
         const idItem = idRetornado(resultInsumo.outBinds?.id);
         if (!Number.isSafeInteger(idItem) || idItem <= 0) throw new Error('O banco não retornou o ID do equipamento/insumo.');
         idInsumo ??= idItem; idsInsumos.push(idItem);
-        for (const parada of item.parada ? entrada.paradas ?? [] : []) {
+        for (const parada of item.parada ? paradas : []) {
           const resultParada = await connection.execute(`INSERT INTO csintegracao.cs_agr_irrig_apont_parada
             (id_irgaptinsu, cod_motivo, inicio, termino, importado)
             VALUES (:insumo, :motivo, :inicio, :termino, 'N') RETURNING id_irgaptprda INTO :id`,

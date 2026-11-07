@@ -39,11 +39,15 @@ export function distribuirInsumosIrrigacao(insumo: InsumoIrrigacao, paradas: Par
   const periodos = distribuirPeriodosIrrigacao(insumo.horaInicio ?? '', insumo.horaTermino ?? '', paradas);
   if (!periodos.length) throw new Error('As paradas cobrem todo o período. Selecione Informar apenas paradas.');
   const manuais = insumo.distanciasPeriodos;
+  let distanciasManuais = manuais;
   if (manuais) {
     if (modalidade !== 'B') throw new Error('Distâncias por período são válidas apenas para irrigação em barra.');
     const chaves = manuais.map(item => `${item.inicio}-${item.termino}`);
-    if (manuais.length !== periodos.length || new Set(chaves).size !== chaves.length || periodos.some(periodo => !chaves.includes(`${periodo.inicio}-${periodo.termino}`))) {
-      throw new Error('Os horários foram alterados. Confira a distância de cada período distribuído antes de salvar ou enviar.');
+    if (manuais.length !== periodos.length || new Set(chaves).size !== chaves.length) {
+      throw new Error('Informe a distância de cada período distribuído antes de salvar ou enviar.');
+    }
+    if (periodos.some(periodo => !chaves.includes(`${periodo.inicio}-${periodo.termino}`))) {
+      distanciasManuais = periodos.map((periodo, indice) => ({ ...periodo, distancia: manuais[indice].distancia }));
     }
   }
   const pesos = periodos.map(periodo => minutosHorarioIrrigacao(periodo.termino) - minutosHorarioIrrigacao(periodo.inicio));
@@ -55,7 +59,7 @@ export function distribuirInsumosIrrigacao(insumo: InsumoIrrigacao, paradas: Par
   return periodos.map((periodo, indice) => {
     const item = { ...parametros, horaInicio: periodo.inicio, horaTermino: periodo.termino };
     if (campo && valores) item[campo] = valores[indice];
-    if (manuais) item.distancia = manuais.find(valor => valor.inicio === periodo.inicio && valor.termino === periodo.termino)!.distancia;
+    if (distanciasManuais) item.distancia = distanciasManuais.find(valor => valor.inicio === periodo.inicio && valor.termino === periodo.termino)!.distancia;
     validarInsumoIrrigacao(item, modalidade);
     return item;
   });
