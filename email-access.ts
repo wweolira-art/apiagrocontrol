@@ -108,7 +108,13 @@ function requiredTabs(url: string): AbaDispositivo[] | null {
   if (url === '/api/config' || url.startsWith('/api/oracle-config') || url === '/api/irrigacao/insert-test') return ['conexao'];
   return null;
 }
-export function createEmailAccessGuard(store: ReturnType<typeof createEmailAccessStore>) {
+type AcessoAbasStore = {
+  current: (idUsuario: unknown) => Promise<AcessoUsuario> | AcessoUsuario;
+  list: () => Promise<AcessoUsuario[]> | AcessoUsuario[];
+  update: (idUsuario: unknown, body: Record<string, unknown>) => Promise<AcessoUsuario> | AcessoUsuario;
+};
+
+export function createEmailAccessGuard(store: AcessoAbasStore) {
   const lotes = new Map<string, { usuario: number; sessao: string; abas: AbaDispositivo[]; criado: number }>();
 
   return async (req: IncomingMessage, res: ServerResponse, pathname: string, user: { perfil: string; idUsuario: number }): Promise<boolean> => {

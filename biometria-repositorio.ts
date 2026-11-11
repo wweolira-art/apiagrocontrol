@@ -44,6 +44,7 @@ export function abrirRepositorioBiometria(arquivo: string) {
       if (!colunas.has('usuario')) db.exec("ALTER TABLE analise_biometrica_lancamentos ADD COLUMN usuario TEXT NOT NULL DEFAULT ''");
       if (!colunas.has('created_by_user_id')) db.exec('ALTER TABLE analise_biometrica_lancamentos ADD COLUMN created_by_user_id INTEGER');
       if (!colunas.has('qtd_colmos')) db.exec('ALTER TABLE analise_biometrica_lancamentos ADD COLUMN qtd_colmos REAL');
+      if (!colunas.has('tipo_linha')) db.exec("ALTER TABLE analise_biometrica_lancamentos ADD COLUMN tipo_linha TEXT NOT NULL DEFAULT 'simples'");
       db.exec(`CREATE TABLE IF NOT EXISTS analise_biometrica_motivos (
         collected_at TEXT NOT NULL, farm_code TEXT NOT NULL, field_code TEXT NOT NULL,
         motive_code INTEGER NOT NULL, updated_at TEXT NOT NULL,
@@ -53,7 +54,7 @@ export function abrirRepositorioBiometria(arquivo: string) {
       db.exec('COMMIT');
     } catch (erro) { db.exec('ROLLBACK'); throw erro; }
   } catch (erro) { db.close(); throw erro; }
-  const linhaPublica = (row: Record<string, unknown>) => ({id:Number(row.id),data:row.data_label,cod_ponto:Number(row.point_code),cod_item:Number(row.item_code),cod_fazenda:Number(row.farm_code),cod_talhao:Number(row.field_code),variedade:row.variety,valor:Number(row.value),usuario:row.usuario,qtd_colmos:row.qtd_colmos,
+  const linhaPublica = (row: Record<string, unknown>) => ({id:Number(row.id),data:row.data_label,cod_ponto:Number(row.point_code),cod_item:Number(row.item_code),cod_fazenda:Number(row.farm_code),cod_talhao:Number(row.field_code),variedade:row.variety,valor:Number(row.value),usuario:row.usuario,tipo_linha:row.tipo_linha==='dupla'?'dupla':'simples',qtd_colmos:row.qtd_colmos,
     links:[{rel:'self',href:`/api/biometria/lancamentos/${row.id}`}],origem:'controle-agricola-local'});
   const idLinha = (id: number) => db.prepare('SELECT * FROM analise_biometrica_lancamentos WHERE id=?').get(id);
   return {
@@ -85,7 +86,8 @@ export function abrirRepositorioBiometria(arquivo: string) {
         if(!entrada||typeof entrada!=='object')throw new ErroBiometriaLocal(400,'Item inválido.');
         const valor=typeof entrada.valor==='number'?entrada.valor:NaN;
         if(!Number.isFinite(valor)||valor<0)throw new ErroBiometriaLocal(400,'Valor biométrico inválido.');
-        const item={data:dataIso(entrada.data),codPonto:codigo(entrada.codPonto,'ponto'),codItem:codigo(entrada.codItem,'item'),codFazenda:codigo(entrada.codFazenda,'fazenda'),codTalhao:codigo(entrada.codTalhao,'talhão'),variedade:texto(entrada.variedade,'Variedade',200),valor,codigosMotivoTch:motivos(entrada.codigosMotivoTch),usuario:usuario.nome,idUsuario:usuario.idUsuario,
+        const tipoLinha=entrada.tipoLinha==='dupla'?'dupla':'simples';
+        const item={data:dataIso(entrada.data),codPonto:codigo(entrada.codPonto,'ponto'),codItem:codigo(entrada.codItem,'item'),codFazenda:codigo(entrada.codFazenda,'fazenda'),codTalhao:codigo(entrada.codTalhao,'talhão'),variedade:texto(entrada.variedade,'Variedade',200),valor,tipoLinha,codigosMotivoTch:motivos(entrada.codigosMotivoTch),usuario:usuario.nome,idUsuario:usuario.idUsuario,
           qtdColmos:entrada.qtdColmos==null?null:Number(entrada.qtdColmos)};
         if(item.qtdColmos!==null&&(!Number.isFinite(item.qtdColmos)||item.qtdColmos<0))throw new ErroBiometriaLocal(400,'Quantidade de colmos inválida.');
         if(!db.prepare('SELECT 1 FROM analise_biometrica_itens WHERE code=?').get(item.codItem))throw new ErroBiometriaLocal(400,`Item ${item.codItem} ausente do cadastro local do ControleAgricola.`);
@@ -105,9 +107,9 @@ export function abrirRepositorioBiometria(arquivo: string) {
             resultado.push(linhaPublica(row));continue;
           }
           const agora=new Date().toISOString();
-          const args=[item.data,item.data.split('-').reverse().join('/'),String(item.codPonto),item.codItem,String(item.codFazenda),String(item.codTalhao),item.variedade,item.valor,agora,item.usuario,item.idUsuario,item.qtdColmos];
-          db.prepare(`INSERT OR IGNORE INTO analise_biometrica_lancamentos (collected_at,data_label,point_code,item_code,farm_code,field_code,variety,value,updated_at,usuario,created_by_user_id,qtd_colmos) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(...args);
-          const row=db.prepare('SELECT * FROM analise_biometrica_lancamentos WHERE collected_at=? AND point_code=? AND item_code=? AND farm_code=? AND field_code=? AND variety=? AND value=?').get(item.data,String(item.codPonto),item.codItem,String(item.codFazenda),String(item.codTalhao),item.variedade,item.valor);
+          const args=[item.data,item.data.split('-').reverse().join('/'),String(item.codPonto),item.codItem,String(item.codFazenda),String(item.codTalhao),item.variedade,item.valor,item.tipoLinha,agora,item.usuario,item.idUsuario,item.qtdColmos];
+          db.prepare(`INSERT OR IGNORE INTO analise_biometrica_lancamentos (collected_at,data_label,point_code,item_code,farm_code,field_code,variety,value,tipo_linha,updated_at,usuario,created_by_user_id,qtd_colmos) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(...args);
+          const row=db.prepare('SELECT * FROM analise_biometrica_lancamentos WHERE collected_at=? AND point_code=? AND item_code=? AND farm_code=? AND field_code=? AND variety=? AND value=? AND tipo_linha=?').get(item.data,String(item.codPonto),item.codItem,String(item.codFazenda),String(item.codTalhao),item.variedade,item.valor,item.tipoLinha);
           if(!row)throw new Error('Não foi possível confirmar o lançamento local.');
           for(const motivo of item.codigosMotivoTch)db.prepare('INSERT OR IGNORE INTO analise_biometrica_motivos (collected_at,farm_code,field_code,motive_code,updated_at) VALUES (?,?,?,?,?)').run(item.data,String(item.codFazenda),String(item.codTalhao),motivo,agora);
           db.prepare('INSERT INTO analise_biometrica_envios (id_envio,payload_hash,registro_id,created_at) VALUES (?,?,?,?)').run(idEnvio,hash,Number(row.id),agora);

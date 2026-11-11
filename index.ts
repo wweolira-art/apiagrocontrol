@@ -19,6 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAuth, createAuthGuard } from './auth.ts';
 import { createEmailAccessGuard, createEmailAccessStore, DEFAULT_ACCESS_URL } from './email-access.ts';
+import { createAcessoAbasSqlite } from './acesso-abas-sqlite.ts';
 
 const SERVER_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -43,7 +44,12 @@ import {
 
 carregarEnv(path.join(SERVER_DIR, '.env'));
 
-const verificarAcessoAba = createEmailAccessGuard(createEmailAccessStore({ url: process.env.ORDS_ACESSO_ABA_URL || DEFAULT_ACCESS_URL, token: process.env.ORDS_ACESSO_ABA_TOKEN || '' }));
+const acessoAbasOrds = createEmailAccessStore({ url: process.env.ORDS_ACESSO_ABA_URL || DEFAULT_ACCESS_URL, token: process.env.ORDS_ACESSO_ABA_TOKEN || '' });
+const acessoAbasLocal = createAcessoAbasSqlite(path.join(SERVER_DIR, 'data', 'acesso-abas.sqlite'));
+const importarAcessosIniciais = acessoAbasLocal.importarOrdsSeVazio(acessoAbasOrds)
+  .then((usuarios) => { if (usuarios) console.log(`Liberações importadas da ORDS para SQLite: ${usuarios} usuários.`); })
+  .catch((erro: unknown) => console.warn(`Não foi possível importar liberações da ORDS: ${erro instanceof Error ? erro.message : String(erro)}`));
+const verificarAcessoAba = createEmailAccessGuard(acessoAbasLocal);
 const authGuard = createAuthGuard(createAuth({
   buscarFuncionario: buscarFuncionarioUsuario,
   sessionFile: path.join(SERVER_DIR, 'data', 'sessoes.json'),
@@ -764,7 +770,7 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ mensagem: 'Rota não encontrada' }));
 });
 
-server.listen(PORT, '0.0.0.0', () => {
+void importarAcessosIniciais.finally(() => server.listen(PORT, '0.0.0.0', () => {
   console.log(`AgroControl API em http://0.0.0.0:${PORT}`);
   console.log(
     oracleConfigurado()
@@ -780,4 +786,4 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('GET /api/apontamento/cadastros  POST /api/apontamento  POST /api/apontamento/mao-de-obra  GET /api/apontamento/mao-de-obra/servicos');
   console.log('GET /api/perdas/cadastros  POST /api/perdas');
   console.log('GET /api/talhao/custos?codigoFazenda=40800&talhao=1&anomesInicio=202508&anomesFim=202608');
-});
+}));
