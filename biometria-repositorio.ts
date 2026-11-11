@@ -58,6 +58,19 @@ export function abrirRepositorioBiometria(arquivo: string) {
   const idLinha = (id: number) => db.prepare('SELECT * FROM analise_biometrica_lancamentos WHERE id=?').get(id);
   return {
     fechar:()=>db.close(),
+    cadastros() {
+      const itens = db.prepare('SELECT code AS codItem, description AS descricao FROM analise_biometrica_itens ORDER BY code')
+        .all().map(row => ({ codItem: Number(row.codItem), descricao: String(row.descricao ?? '').trim() }));
+      // Pontos e motivos já registrados no banco local permanecem disponíveis
+      // mesmo quando a ORDS estiver desligada. O código é a identificação estável.
+      const pontos = db.prepare("SELECT DISTINCT point_code AS codPonto FROM analise_biometrica_lancamentos WHERE TRIM(point_code) <> '' ORDER BY CAST(point_code AS INTEGER)")
+        .all().map(row => ({ codPonto: Number(row.codPonto), descricao: `Ponto ${String(row.codPonto)}` }))
+        .filter(row => Number.isSafeInteger(row.codPonto) && row.codPonto > 0);
+      const motivosTch = db.prepare('SELECT DISTINCT motive_code AS codMotivo FROM analise_biometrica_motivos ORDER BY motive_code')
+        .all().map(row => ({ codMotivo: Number(row.codMotivo), descricao: `Motivo ${String(row.codMotivo)}` }))
+        .filter(row => Number.isSafeInteger(row.codMotivo) && row.codMotivo > 0);
+      return { itens, pontos, motivosTch, importadoEm: new Date().toISOString() };
+    },
     listar() {return db.prepare('SELECT * FROM analise_biometrica_lancamentos ORDER BY collected_at,id').all().map(linhaPublica);},
     motivos(filtro: {data?:string;codFazenda?:string;codTalhao?:string}={}) {
       const where:string[]=[], binds:(string|number)[]=[];

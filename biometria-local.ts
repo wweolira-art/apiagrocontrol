@@ -30,12 +30,13 @@ export async function atenderBiometriaLocal(req:IncomingMessage,res:ServerRespon
   try{
     const usuario=usuarios.get(req);if(!usuario)throw new ErroEncaminhamento(401,'Entre novamente no aplicativo.');
     const rota=url.pathname.slice('/api/biometria'.length);
-    const valida=rota==='/lancamentos'&&['GET','POST'].includes(req.method??'')||rota==='/motivos-talhao'&&req.method==='GET'||/^\/lancamentos\/\d+$/.test(rota)&&req.method==='DELETE';
+    const valida=rota==='/cadastros'&&req.method==='GET'||rota==='/lancamentos'&&['GET','POST'].includes(req.method??'')||rota==='/motivos-talhao'&&req.method==='GET'||/^\/lancamentos\/\d+$/.test(rota)&&req.method==='DELETE';
     if(!valida)throw new ErroEncaminhamento(404,'Rota biométrica não encontrada.');
     const transporte=process.env.CONTROLE_AGRICOLA_TRANSPORTE?.trim() || (process.env.CONTROLE_AGRICOLA_DB_PATH?.trim()?'arquivo':'http');
     if(transporte==='arquivo'){
       const banco=bancoArquivo(serverDir);
-      if(rota==='/lancamentos'&&req.method==='POST'){const dados=await corpo(req);json(200,banco.gravar(dados?.entradas,usuario));}
+      if(rota==='/cadastros')json(200,banco.cadastros());
+      else if(rota==='/lancamentos'&&req.method==='POST'){const dados=await corpo(req);json(200,banco.gravar(dados?.entradas,usuario));}
       else if(rota==='/lancamentos'&&req.method==='GET')json(200,banco.listar());
       else if(rota==='/motivos-talhao')json(200,banco.motivos({data:url.searchParams.get('data')??undefined,codFazenda:url.searchParams.get('codFazenda')??undefined,codTalhao:url.searchParams.get('codTalhao')??undefined}));
       else{banco.excluir(Number(rota.split('/').at(-1)),usuario);json(200,{ok:true});}
